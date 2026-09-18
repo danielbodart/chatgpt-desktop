@@ -140,7 +140,11 @@ stdenv.mkDerivation (finalAttrs: {
     # node-hid and serialport ship musl prebuilds beside the glibc ones and
     # pick between them at runtime; on NixOS it is always the glibc one.
     "libc.musl-x86_64.so.1"
-    "libc.musl-aarch64.so.1"
+    # serialport also ships Android prebuilds. Only the arm64 one shares an
+    # architecture with a system this builds for, so it is only on aarch64
+    # that autoPatchelfHook looks at it; Node never loads it on Linux.
+    "liblog.so"
+    "libc++_shared.so"
   ];
 
   # The .deb has no setuid chrome-sandbox to drop, unlike most Electron
