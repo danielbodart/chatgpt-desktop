@@ -1,0 +1,85 @@
+name: Build and smoke-test
+description: >-
+  Build chatgpt-desktop for one system, then run the result. Shared by the CI
+  workflow and by the verification stage of the update workflow, so that what
+  lands on trunk is checked exactly the way a pull request is.
+
+inputs:
+  system:
+    description: Nix system double, used only in log output.
+    required: true
+  cachix-auth-token:
+    description: >-
+      Write token for the danielbodart Cachix cache. Optional: without one the
+      build still runs, it just is not pushed anywhere.
+    required: false
+    default: ""
+  github-token:
+    description: Token for Nix's GitHub API access, to avoid rate limits.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The closure is over 2 GB, unpacked from a 400 MB .deb that is also in
+    # the store, and the runner image leaves less free than that on / once its
+    # own toolchains are counted.
+    - name: Reclaim runner disk space
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+          /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+        df -h /
+
+    # Ubuntu 23.10 and later use AppArmor to stop unprivileged processes
+    # creating user namespaces, and the .deb ships no setuid helper to fall
+    # back on, which leaves Chromium with no sandbox at all. OpenAI's own
+    # postinst works around it by installing an unconfined profile for the
+    # app.
+    #
+    # NixOS does not apply that restriction, so lifting it here makes the
+    # runner behave like the systems this package targets, and the smoke test
+    # below exercises the same namespace sandbox a user would get.
+    - name: Allow unprivileged user namespaces
+      shell: bash
+      run: |
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+
+    - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      with:
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+          access-tokens = github.com=${{ inputs.github-token }}
+
+    - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      if: inputs.cachix-auth-token != ''
+      with:
+        name: danielbodart
+        authToken: ${{ inputs.cachix-auth-token }}
+
+    - name: nix flake check
+      shell: bash
+      run: nix flake check --print-build-logs
+
+    - name: Build
+      shell: bash
+      run: nix build .#chatgpt-desktop --print-build-logs --out-link result
+
+    # The app reports its own version, read out of the packaged app, so this
+    # exercises the patched interpreter, the RPATHs and the asar in one go.
+    # Anything autoPatchelfHook got wrong shows up here as a loader error.
+    - name: Run the packaged app
+      shell: bash
+      run: |
+        version="$(./result/bin/chatgpt --version)"
+        expected="$(jq -r .version sources.json)"
+        echo "chatgpt reported $version on ${{ inputs.system }}"
+        [ "$version" = "$expected" ] || {
+          echo "expected $expected" >&2
+          exit 1
+        }
+
+    - name: Report closure size
+      shell: bash
+      run: nix path-info --closure-size --human-readable ./result

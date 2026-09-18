@@ -1,0 +1,138 @@
+name: Update
+
+# OpenAI publishes to its apt repository whenever it likes, so this polls
+# rather than waits for a webhook it will never get.
+#
+# The version only reaches trunk after it has actually built and run on both
+# architectures. That is why this pushes straight to trunk instead of opening
+# a pull request: a PR raised by GITHUB_TOKEN does not trigger workflows, so
+# an auto-merged one would land unverified.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      updated: ${{ steps.update.outputs.updated }}
+      version: ${{ steps.update.outputs.version }}
+      previous: ${{ steps.update.outputs.previous }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check OpenAI's apt repository for a newer release
+        id: update
+        run: |
+          previous="$(jq -r .version sources.json)"
+          echo "previous=$previous" >>"$GITHUB_OUTPUT"
+
+          nix develop --command ./scripts/update.sh
+
+          version="$(jq -r .version sources.json)"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+          if git diff --quiet -- sources.json; then
+            echo "updated=false" >>"$GITHUB_OUTPUT"
+            echo "Already at $previous." >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "updated=true" >>"$GITHUB_OUTPUT"
+            echo "\`$previous\` -> \`$version\`" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the candidate sources.json
+        if: steps.update.outputs.updated == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sources
+          path: sources.json
+          retention-days: 1
+
+  verify:
+    needs: check
+    if: needs.check.outputs.updated == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sources
+
+      - uses: ./.github/actions/build
+        with:
+          system: ${{ matrix.system }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: [check, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sources
+
+      - name: Commit and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          PREVIOUS: ${{ needs.check.outputs.previous }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add sources.json
+          git commit \
+            -m "chatgpt-desktop: $PREVIOUS -> $VERSION" \
+            -m "Hashes taken from OpenAI's signed apt index. Built and run on x86_64-linux and aarch64-linux before landing."
+          git push origin HEAD:trunk
+
+          # A tag per release, so a consumer can pin one exactly.
+          git tag -a "v$VERSION" -m "chatgpt-desktop $VERSION"
+          git push origin "v$VERSION"
+
+          # printf rather than a heredoc, whose body would carry this block's
+          # YAML indentation into the release notes.
+          printf '%s\n' \
+            "ChatGPT Desktop \`$VERSION\`, repackaged from OpenAI's apt repository." \
+            "" \
+            "Upstream documentation: https://learn.chatgpt.com/docs/linux/linux-app" \
+            "" \
+            "Pin this version:" \
+            "" \
+            '```nix' \
+            "inputs.chatgpt-desktop.url = \"github:$REPOSITORY/v$VERSION\";" \
+            '```' \
+            >notes.md
+
+          gh release create "v$VERSION" \
+            --title "chatgpt-desktop $VERSION" \
+            --notes-file notes.md

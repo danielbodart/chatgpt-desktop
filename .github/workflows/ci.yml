@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/build
+        with:
+          system: ${{ matrix.system }}
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  # sources.json is machine-written, so the thing worth checking on a pull
+  # request is that a human has not hand-edited it into disagreeing with the
+  # signed index it claims to come from.
+  sources-are-signed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Regenerate sources.json and compare
+        run: |
+          cp sources.json sources.json.committed
+          nix develop --command ./scripts/update.sh --force
+
+          # An older pin is fine and expected: upstream moves between the
+          # commit and the check. A pin that differs at the same version is
+          # not, because it means the hashes were not the signed ones.
+          committed_version="$(jq -r .version sources.json.committed)"
+          upstream_version="$(jq -r .version sources.json)"
+
+          if [ "$committed_version" != "$upstream_version" ]; then
+            echo "Pinned at $committed_version, upstream is now $upstream_version." \
+              >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          diff -u sources.json.committed sources.json || {
+            echo "sources.json does not match OpenAI's signed index" >&2
+            exit 1
+          }
