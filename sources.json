@@ -1,17 +1,17 @@
 {
-  "version": "26.917.71314",
+  "version": "26.924.20706",
   "sources": {
     "x86_64-linux": {
       "debianArch": "amd64",
-      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.917.71314_amd64.deb",
-      "hash": "sha256-hR7Ci2W94v8dqfN9zfW24gqRXHVo+LLOmTwAQo8BiuU=",
-      "size": 420831054
+      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.924.20706_amd64.deb",
+      "hash": "sha256-dgoKmNzAWkDL2KNv7B3Xsycz5qHypShThq5/r5pqsDM=",
+      "size": 454202490
     },
     "aarch64-linux": {
       "debianArch": "arm64",
-      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.917.71314_arm64.deb",
-      "hash": "sha256-IRSINiPa40pLx6Z/qtPmZS3Zv9x6KPV8Nu0D41C+HPE=",
-      "size": 399743370
+      "url": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/pool/main/c/chatgpt/chatgpt_26.924.20706_arm64.deb",
+      "hash": "sha256-BiDhiK9XvDPNPMAWx+w/z27Qh8GpAoPQV1mMlCiXVkg=",
+      "size": 431841450
     }
   }
 }
