@@ -78,6 +78,47 @@
         {
           inherit chatgpt-desktop;
 
+          # A dependency that quietly drags perl, python, full git or the
+          # whole of systemd back in fails here. The budget covers everything
+          # except the app's own store path: that is OpenAI's payload, and a
+          # bigger upstream release must not be able to block the update.
+          closure-is-slim =
+            pkgs.runCommand "chatgpt-desktop-closure-is-slim"
+              {
+                closure = pkgs.closureInfo { rootPaths = [ chatgpt-desktop ]; };
+                app = chatgpt-desktop;
+                maxDepsMiB = 550;
+              }
+              ''
+                bad=$(grep -E -- '-(perl-[0-9]|python3-[0-9]|systemd-[0-9]|xdg-utils-|git-[0-9])' \
+                  "$closure/store-paths" || true)
+                if [ -n "$bad" ]; then
+                  echo "unwanted paths in the chatgpt-desktop closure:" >&2
+                  echo "$bad" >&2
+                  exit 1
+                fi
+
+                # registration is path, hash, size, deriver, reference count,
+                # then that many references, for each path in the closure.
+                appBytes=$(awk -v app="$app" '
+                  state == 0 { path = $0; state = 1; next }
+                  state == 1 { state = 2; next }
+                  state == 2 { if (path == app) print $0; state = 3; next }
+                  state == 3 { state = 4; next }
+                  state == 4 { refs = $0; state = refs > 0 ? 5 : 0; next }
+                  state == 5 { if (--refs == 0) state = 0 }
+                ' "$closure/registration")
+
+                total=$(( $(cat "$closure/total-nar-size") / 1048576 ))
+                deps=$(( ($(cat "$closure/total-nar-size") - appBytes) / 1048576 ))
+                echo "closure is $total MiB, of which dependencies are $deps MiB"
+                if [ "$deps" -gt "$maxDepsMiB" ]; then
+                  echo "dependencies are $deps MiB, over the $maxDepsMiB MiB budget" >&2
+                  exit 1
+                fi
+                echo "$total MiB total, $deps MiB dependencies" >$out
+              '';
+
           # The version in sources.json has to be the version inside the
           # archive, otherwise the flake is pinning a label rather than a
           # release. OpenAI's build writes the same version into this file as

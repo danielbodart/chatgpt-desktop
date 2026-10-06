@@ -37,17 +37,17 @@
   libxfixes,
   libxkbcommon,
   libxrandr,
-  mesa,
   nspr,
   nss,
   openssl,
   pango,
-  systemd,
+  systemdLibs,
   tpm2-tss,
   vulkan-loader,
-  xdg-utils,
-  git,
+  callPackage,
+  gitMinimal,
   openssh,
+  xdg-shims ? callPackage ./nix/xdg-shims.nix { },
   sources ? lib.importJSON ./sources.json,
 }:
 
@@ -105,11 +105,12 @@ stdenv.mkDerivation (finalAttrs: {
     libxfixes
     libxkbcommon
     libxrandr
-    mesa
     nspr
     nss
     pango
-    (lib.getLib systemd)
+    # libudev and libsystemd only; `lib.getLib systemd` is the whole of
+    # systemd, since it has no separate lib output.
+    systemdLibs
 
     # resources/native/remote-control-device-key.node keeps a device key in
     # the TPM when there is one, through tpm2-tss, and signs with OpenSSL.
@@ -120,7 +121,7 @@ stdenv.mkDerivation (finalAttrs: {
   # Loaded with dlopen at runtime rather than linked, so autoPatchelfHook
   # cannot see the need for them from the ELF headers.
   runtimeDependencies = [
-    (lib.getLib systemd)
+    systemdLibs
     libglvnd
     libnotify
     libpulseaudio
@@ -140,11 +141,6 @@ stdenv.mkDerivation (finalAttrs: {
     # node-hid and serialport ship musl prebuilds beside the glibc ones and
     # pick between them at runtime; on NixOS it is always the glibc one.
     "libc.musl-x86_64.so.1"
-    # serialport also ships Android prebuilds. Only the arm64 one shares an
-    # architecture with a system this builds for, so it is only on aarch64
-    # that autoPatchelfHook looks at it; Node never loads it on Linux.
-    "liblog.so"
-    "libc++_shared.so"
   ];
 
   # The .deb has no setuid chrome-sandbox to drop, unlike most Electron
@@ -171,6 +167,19 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$out/${appDir}" "$out/bin" "$out/share"
     cp -r usr/${appDir}/. "$out/${appDir}/"
     cp -r usr/share/metainfo usr/share/pixmaps "$out/share/"
+
+    # node-hid and serialport ship prebuilds for Windows, macOS and Android
+    # alongside the Linux ones, several levels down in app.asar.unpacked.
+    # Node never loads them here, and the Android arm64 one would otherwise
+    # send autoPatchelfHook looking for liblog and libc++ on aarch64.
+    find "$out/${appDir}/resources/app.asar.unpacked" -depth -type d -path '*/prebuilds/*' \
+      \( -name '*win32-*' -o -name '*darwin-*' -o -name 'android-*' \) \
+      -exec rm -r {} +
+
+    # The bundled Node carries about 17 MiB of debug symbols. Stripped here,
+    # before autoPatchelfHook rewrites it: stripping afterwards breaks its
+    # symbol lookup. The rest of the tree stays unstripped (see dontStrip).
+    $STRIP --strip-debug "$out/${appDir}/resources/cua_node/bin/node"
 
     # Two fixes inside app.asar, both for things that only go wrong when the
     # app runs out of the Nix store. See nix/patch-asar.cjs for how the
@@ -215,7 +224,11 @@ stdenv.mkDerivation (finalAttrs: {
   #
   # git and ssh are what the Codex side of the app shells out to for
   # repositories, and the .deb recommends git for the same reason. Suffixed,
-  # not prefixed, so the user's own versions win.
+  # not prefixed, so the user's own versions win. gitMinimal, because full
+  # git brings perl and python along for git-svn, git-p4 and send-email.
+  #
+  # xdg-shims stands in for xdg-utils, which pulls in perl; see
+  # nix/xdg-shims.nix. Also suffixed, so a real xdg-utils wins.
   #
   # NIX_LD_LIBRARY_PATH is for the runtime the app downloads on first launch
   # into ~/.cache/codex-runtimes: Node, Python, poppler and a headless
@@ -230,10 +243,10 @@ stdenv.mkDerivation (finalAttrs: {
   postFixup = ''
     makeShellWrapper "$out/${appDir}/ChatGPT" "$out/bin/chatgpt" \
       "''${gappsWrapperArgs[@]}" \
-      --prefix PATH : ${lib.makeBinPath [ xdg-utils ]} \
       --suffix PATH : ${
         lib.makeBinPath [
-          git
+          xdg-shims
+          gitMinimal
           openssh
         ]
       } \
