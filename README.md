@@ -47,7 +47,7 @@ This one:
 ```nix
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     chatgpt-desktop.url = "github:danielbodart/chatgpt-desktop";
   };
 
@@ -127,6 +127,18 @@ sed -n "s/^SIGNING_KEY_BASE64='\(.*\)'$/\1/p" control/postinst | base64 -d |
   gpg --show-keys
 ```
 
+## Channels
+
+- **Nix**, the only channel: OpenAI's `.deb` for amd64 and arm64, from its
+  signed apt repository, patched against nixos-26.05 by nixpkgs. There is no
+  mise toolchain or Docker image: nothing here is compiled from source of ours.
+  Take the flake as an input and enable `nixosModules.default`, or install
+  `packages.<system>.default`; CI pushes the packages to
+  `https://danielbodart.cachix.org` (see [Binary cache](#binary-cache)).
+- **Updates**: hourly for a new upstream release, which is tagged and
+  released; weekly (Sunday 21:23 UTC) for the flake's inputs, which is not.
+  Both are built and run on both architectures before they land on `trunk`.
+
 ## How updates work
 
 An hourly job checks the repository index. When it finds a newer version it
@@ -137,6 +149,10 @@ commit reach `trunk`, followed by a `v<version>` tag and a GitHub release.
 This pushes to `trunk` rather than opening a pull request on purpose. A pull
 request raised with the default token does not trigger workflows, so an
 auto-merged one would land without ever having been built.
+
+Once a week, Sunday 21:23 UTC, the same workflow also moves `flake.lock`
+(nixpkgs, on nixos-26.05), built and run the same way before it lands as
+`Weekly update: <inputs>`. That is not a release, so it gets no tag.
 
 Nothing about this changes when you pin a tag. `nix flake update` is still the
 only thing that moves your version.

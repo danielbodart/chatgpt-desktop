@@ -8,20 +8,23 @@ name: Update
 # a pull request: a PR raised by GITHUB_TOKEN does not trigger workflows, so
 # an auto-merged one would land unverified.
 #
-# Once a week the same run also moves flake.lock. nixpkgs is not just a build
-# tool here: autoPatchelfHook links Electron against the glibc, GTK and NSS of
-# whichever nixpkgs builds it, and consumers take the result prebuilt from
-# Cachix rather than following their own nixpkgs. So a stale lock is a stale
-# set of libraries in everyone's closure, and a second copy of them alongside
-# the system's. The window is shared with the other danielbodart flakes, two
-# hours before the NixOS configuration that consumes them moves its own
-# nixpkgs-unstable, so the two usually settle on the same nixos-unstable
-# revision and share those store paths.
+# Once a week, Sunday 21:23 UTC, the same run is also the weekly update every
+# danielbodart repository has: it moves every flake input (nixpkgs, on
+# nixos-26.05). There is no mise toolchain, language dependency or base image
+# to move: Nix is this repository's only channel, repackaging a vendor .deb.
+# nixpkgs is not just a build tool here: autoPatchelfHook links Electron
+# against the glibc, GTK and NSS of whichever nixpkgs builds it, and consumers
+# take the result prebuilt from Cachix rather than following their own
+# nixpkgs. So a stale lock is a stale set of libraries in everyone's closure,
+# and a second copy of them alongside the system's. nix-config takes its own
+# update two hours later, at 23:23, on the same nixos-26.05, so the two
+# usually settle on the same revision and share those store paths.
 #
-# The bumped lock goes through the same verify job as a new release, so the
+# The moved lock goes through the same verify job as a new release, so the
 # build that lands is one that has already been pushed to Cachix. That
 # matters doubly here: a push made with GITHUB_TOKEN does not trigger CI, so
-# nothing else would ever build it.
+# nothing else would ever build it. It lands as "Weekly update: <inputs>",
+# untagged and unreleased: the app inside is the same version.
 on:
   schedule:
     - cron: "17 * * * *"
@@ -90,28 +93,24 @@ jobs:
 
           if git diff --quiet -- flake.lock; then
             echo "locked=false" >>"$GITHUB_OUTPUT"
-            echo "flake.lock already current." >>"$GITHUB_STEP_SUMMARY"
+            echo "Nothing moved." >>"$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          # "nixpkgs d6524aa -> 1c89083" for each input whose revision moved.
+          # The name of each input that moved, "nixpkgs, ...".
           moved="$(jq -rn \
             --slurpfile before "$RUNNER_TEMP/flake.lock.before" \
             --slurpfile after flake.lock '
               [ $after[0].nodes | to_entries[]
                 | select(.value.locked)
-                | .key as $name
-                | (.value.locked.rev // .value.locked.narHash) as $new
-                | ($before[0].nodes[$name].locked
-                    | if . == null then "new" else (.rev // .narHash) end) as $old
-                | select($old != $new)
-                | "\($name) \($old[0:7]) -> \($new[0:7])" ]
+                | select(.value.locked != $before[0].nodes[.key].locked)
+                | .key ]
               | join(", ")')"
           # Same revision, new narHash: rare, but still worth landing.
           [ -n "$moved" ] || moved="inputs re-locked at the same revisions"
           echo "locked=true" >>"$GITHUB_OUTPUT"
           echo "moved=$moved" >>"$GITHUB_OUTPUT"
-          echo "flake.lock: $moved" >>"$GITHUB_STEP_SUMMARY"
+          echo "Weekly update: $moved" >>"$GITHUB_STEP_SUMMARY"
 
       - name: Upload the candidate sources.json and flake.lock
         if: steps.update.outputs.updated == 'true' || steps.lock.outputs.locked == 'true'
@@ -178,8 +177,8 @@ jobs:
           if [ "$LOCKED" = true ]; then
             git add flake.lock
             git commit \
-              -m "flake.lock: $MOVED" \
-              -m "Weekly bump, in the window shared with the other danielbodart flakes. Built and run on x86_64-linux and aarch64-linux, and pushed to Cachix, before landing."
+              -m "Weekly update: $MOVED" \
+              -m "Built and run on x86_64-linux and aarch64-linux, and pushed to Cachix, before landing."
           fi
 
           if [ "$UPDATED" != true ]; then

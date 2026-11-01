@@ -30,7 +30,8 @@ jobs:
       - uses: ./.github/actions/build
         with:
           system: ${{ matrix.system }}
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Pushed from trunk only.
+          cachix-auth-token: ${{ github.event_name == 'push' && secrets.CACHIX_AUTH_TOKEN || '' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # sources.json is machine-written, so the thing worth checking on a pull
