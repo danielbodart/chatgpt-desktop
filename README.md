@@ -129,15 +129,21 @@ sed -n "s/^SIGNING_KEY_BASE64='\(.*\)'$/\1/p" control/postinst | base64 -d |
 
 ## Channels
 
-- **Nix**, the only channel: OpenAI's `.deb` for amd64 and arm64, from its
-  signed apt repository, patched against nixos-26.05 by nixpkgs. There is no
-  mise toolchain or Docker image: nothing here is compiled from source of ours.
-  Take the flake as an input and enable `nixosModules.default`, or install
-  `packages.<system>.default`; CI pushes the packages to
-  `https://danielbodart.cachix.org` (see [Binary cache](#binary-cache)).
-- **Updates**: hourly for a new upstream release, which is tagged and
-  released; weekly (Sunday 21:23 UTC) for the flake's inputs, which is not.
-  Both are built and run on both architectures before they land on `trunk`.
+- **Nix**: take the flake as an input and enable `nixosModules.default`, or
+  install `packages.<system>.default`. Built by nixpkgs (nixos-26.05) from
+  OpenAI's signed `.deb` for amd64 and arm64; CI pushes the packages to
+  `https://danielbodart.cachix.org` (see [Binary cache](#binary-cache)). No
+  `inputs.nixpkgs.follows`: the app is patched against this flake's nixpkgs
+  and consumers take it prebuilt from Cachix, so following yours would only
+  rebuild it.
+- Not shipped: Docker — a desktop app, not a service.
+- Not shipped: Tarball + systemd — OpenAI already ships the `.deb` this
+  repackages; there is nothing of ours to compile, so no mise toolchain either.
+
+Updated hourly for a new upstream release (`upstream.yml`, which tags and
+releases it) and weekly, Sunday 21:23 UTC, for the flake's inputs
+(`update.yml`, the Weekly update). A release is cut only when OpenAI's
+version changed; the weekly update never releases.
 
 ## How updates work
 
@@ -150,9 +156,9 @@ This pushes to `trunk` rather than opening a pull request on purpose. A pull
 request raised with the default token does not trigger workflows, so an
 auto-merged one would land without ever having been built.
 
-Once a week, Sunday 21:23 UTC, the same workflow also moves `flake.lock`
-(nixpkgs, on nixos-26.05), built and run the same way before it lands as
-`Weekly update: <inputs>`. That is not a release, so it gets no tag.
+Once a week, Sunday 21:23 UTC, a separate workflow, the Weekly update, moves
+`flake.lock` (nixpkgs, on nixos-26.05), built and run the same way before it
+lands as `Weekly update: <inputs>`. That is not a release, so it gets no tag.
 
 Nothing about this changes when you pin a tag. `nix flake update` is still the
 only thing that moves your version.

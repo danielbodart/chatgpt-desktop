@@ -1,17 +1,12 @@
-name: Update
+name: Weekly update
 
-# OpenAI publishes to its apt repository whenever it likes, so this polls
-# rather than waits for a webhook it will never get.
+# The weekly update every danielbodart repository has, Sunday 21:23 UTC. It
+# moves every flake input (nixpkgs, on nixos-26.05). There is no mise
+# toolchain, language dependency or base image to move: Nix is this
+# repository's only channel, repackaging a vendor .deb. New upstream versions
+# of the app are polled hourly by upstream.yml, which is what tags and
+# releases; this releases nothing, because the app inside is the same version.
 #
-# The version only reaches trunk after it has actually built and run on both
-# architectures. That is why this pushes straight to trunk instead of opening
-# a pull request: a PR raised by GITHUB_TOKEN does not trigger workflows, so
-# an auto-merged one would land unverified.
-#
-# Once a week, Sunday 21:23 UTC, the same run is also the weekly update every
-# danielbodart repository has: it moves every flake input (nixpkgs, on
-# nixos-26.05). There is no mise toolchain, language dependency or base image
-# to move: Nix is this repository's only channel, repackaging a vendor .deb.
 # nixpkgs is not just a build tool here: autoPatchelfHook links Electron
 # against the glibc, GTK and NSS of whichever nixpkgs builds it, and consumers
 # take the result prebuilt from Cachix rather than following their own
@@ -20,38 +15,31 @@ name: Update
 # update two hours later, at 23:23, on the same nixos-26.05, so the two
 # usually settle on the same revision and share those store paths.
 #
-# The moved lock goes through the same verify job as a new release, so the
-# build that lands is one that has already been pushed to Cachix. That
+# The moved lock is built and run on both architectures, and its packages
+# pushed to Cachix, by the same build action as CI before it lands. That
 # matters doubly here: a push made with GITHUB_TOKEN does not trigger CI, so
-# nothing else would ever build it. It lands as "Weekly update: <inputs>",
-# untagged and unreleased: the app inside is the same version.
+# nothing else would ever build it. It lands as "Weekly update: <inputs>".
 on:
   schedule:
-    - cron: "17 * * * *"
-    # Sunday 21:23 UTC. The "Update flake.lock" step matches this exact
-    # string, so change both together.
     - cron: "23 21 * * 0"
   workflow_dispatch:
-    inputs:
-      update-lock:
-        description: Also run nix flake update, as the weekly run does
-        type: boolean
-        default: false
 
 permissions:
   contents: write
 
+# Shared with upstream.yml: both commit to trunk.
 concurrency:
   group: update
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  check:
+  update:
     runs-on: ubuntu-latest
     outputs:
-      updated: ${{ steps.update.outputs.updated }}
-      version: ${{ steps.update.outputs.version }}
-      previous: ${{ steps.update.outputs.previous }}
       locked: ${{ steps.lock.outputs.locked }}
       moved: ${{ steps.lock.outputs.moved }}
     steps:
@@ -63,30 +51,10 @@ jobs:
             experimental-features = nix-command flakes
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check OpenAI's apt repository for a newer release
-        id: update
-        run: |
-          previous="$(jq -r .version sources.json)"
-          echo "previous=$previous" >>"$GITHUB_OUTPUT"
-
-          nix develop --command ./scripts/update.sh
-
-          version="$(jq -r .version sources.json)"
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-
-          if git diff --quiet -- sources.json; then
-            echo "updated=false" >>"$GITHUB_OUTPUT"
-            echo "Already at $previous." >>"$GITHUB_STEP_SUMMARY"
-          else
-            echo "updated=true" >>"$GITHUB_OUTPUT"
-            echo "\`$previous\` -> \`$version\`" >>"$GITHUB_STEP_SUMMARY"
-          fi
-
       # The whole lock, not just nixpkgs: it is the only input, and keeping
       # the step general means a new one is not quietly left behind.
       - name: Update flake.lock
         id: lock
-        if: github.event.schedule == '23 21 * * 0' || inputs.update-lock
         run: |
           cp flake.lock "$RUNNER_TEMP/flake.lock.before"
           nix flake update
@@ -112,19 +80,19 @@ jobs:
           echo "moved=$moved" >>"$GITHUB_OUTPUT"
           echo "Weekly update: $moved" >>"$GITHUB_STEP_SUMMARY"
 
-      - name: Upload the candidate sources.json and flake.lock
-        if: steps.update.outputs.updated == 'true' || steps.lock.outputs.locked == 'true'
+      - name: Upload the candidate flake.lock
+        if: steps.lock.outputs.locked == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sources
-          path: |
-            sources.json
-            flake.lock
+          name: lock
+          path: flake.lock
           retention-days: 1
 
+  # The gate, and the Cachix push of the package outputs: the build action
+  # pushes them once they have built and run.
   verify:
-    needs: check
-    if: needs.check.outputs.updated == 'true' || needs.check.outputs.locked == 'true'
+    needs: update
+    if: needs.update.outputs.locked == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -139,7 +107,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: sources
+          name: lock
 
       - uses: ./.github/actions/build
         with:
@@ -147,71 +115,26 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-  publish:
-    needs: [check, verify]
+  commit:
+    needs: [update, verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: sources
+          name: lock
 
-      - name: Commit and tag
+      - name: Commit and push
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPDATED: ${{ needs.check.outputs.updated }}
-          VERSION: ${{ needs.check.outputs.version }}
-          PREVIOUS: ${{ needs.check.outputs.previous }}
-          LOCKED: ${{ needs.check.outputs.locked }}
-          MOVED: ${{ needs.check.outputs.moved }}
-          REPOSITORY: ${{ github.repository }}
+          MOVED: ${{ needs.update.outputs.moved }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # The lock first, so that a release commit in the same run is the
-          # one its tag points at.
-          if [ "$LOCKED" = true ]; then
-            git add flake.lock
-            git commit \
-              -m "Weekly update: $MOVED" \
-              -m "Built and run on x86_64-linux and aarch64-linux, and pushed to Cachix, before landing."
-          fi
-
-          if [ "$UPDATED" != true ]; then
-            git pull --rebase origin trunk
-            git push origin HEAD:trunk
-            exit 0
-          fi
-
-          git add sources.json
+          git add flake.lock
           git commit \
-            -m "chatgpt-desktop: $PREVIOUS -> $VERSION" \
-            -m "Hashes taken from OpenAI's signed apt index. Built and run on x86_64-linux and aarch64-linux before landing."
+            -m "Weekly update: $MOVED" \
+            -m "Built and run on x86_64-linux and aarch64-linux, and pushed to Cachix, before landing."
           git pull --rebase origin trunk
           git push origin HEAD:trunk
-
-          # A tag per release, so a consumer can pin one exactly.
-          git tag -a "v$VERSION" -m "chatgpt-desktop $VERSION"
-          git push origin "v$VERSION"
-
-          # printf rather than a heredoc, whose body would carry this block's
-          # YAML indentation into the release notes.
-          printf '%s\n' \
-            "ChatGPT Desktop \`$VERSION\`, repackaged from OpenAI's apt repository." \
-            "" \
-            "Upstream documentation: https://learn.chatgpt.com/docs/linux/linux-app" \
-            "" \
-            "Pin this version:" \
-            "" \
-            '```nix' \
-            "inputs.chatgpt-desktop.url = \"github:$REPOSITORY/v$VERSION\";" \
-            '```' \
-            >notes.md
-
-          gh release create "v$VERSION" \
-            --title "chatgpt-desktop $VERSION" \
-            --notes-file notes.md

@@ -1,8 +1,9 @@
 name: Build and smoke-test
 description: >-
   Build chatgpt-desktop for one system, then run the result. Shared by the CI
-  workflow and by the verification stage of the update workflow, so that what
-  lands on trunk is checked exactly the way a pull request is.
+  workflow and by the verification stages of the Upstream and Weekly update
+  workflows, so that what lands on trunk is checked exactly the way a pull
+  request is.
 
 inputs:
   system:
